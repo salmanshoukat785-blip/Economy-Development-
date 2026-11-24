@@ -1,1 +1,71 @@
+name: Build APK from ZIP
 
+on:
+  push:
+    branches: [ main, master ]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find project (unzip if a ZIP was uploaded)
+        run: |
+          set -e
+          if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
+            PROJECT=.
+          else
+            ZIP=$(find . -maxdepth 2 -name '*.zip' -not -path './.git/*' | head -n 1)
+            if [ -z "$ZIP" ]; then echo "No ZIP or Gradle project found in the repository"; exit 1; fi
+            echo "Using ZIP: $ZIP"
+            rm -rf _proj && mkdir _proj
+            unzip -q "$ZIP" -d _proj
+            SETTINGS=$(find _proj -maxdepth 3 \( -name settings.gradle.kts -o -name settings.gradle \) | head -n 1)
+            if [ -z "$SETTINGS" ]; then echo "No Gradle project inside the ZIP"; exit 1; fi
+            PROJECT=$(dirname "$SETTINGS")
+          fi
+          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK
+        run: |
+          cd "$PROJECT"
+          if [ -x ./gradlew ]; then ./gradlew assembleDebug; else gradle assembleDebug; fi
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          APK=$(find "$PROJECT" -name '*-debug.apk' | head -n 1)
+          cp "$APK" out/PMS-Economy-Notes.apk
+          ls -la out
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PMS-Economy-Notes-APK
+          path: out/PMS-Economy-Notes.apk
+
+      - name: Publish APK to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: APK build ${{ github.run_number }}
+          files: out/PMS-Economy-Notes.apk

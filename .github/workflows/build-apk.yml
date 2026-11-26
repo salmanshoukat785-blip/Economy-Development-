@@ -16,14 +16,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Find project (unzip if a ZIP was uploaded)
+      - name: Find project (unzip the newest ZIP if one was uploaded)
         run: |
           set -e
           if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
             PROJECT=.
           else
-            ZIP=$(find . -maxdepth 2 -name '*.zip' -not -path './.git/*' | head -n 1)
+            ZIP=$(find . -maxdepth 2 -name '*.zip' -not -path './.git/*' | while read -r z; do echo "$(git log -1 --format=%ct -- "$z") $z"; done | sort -n | tail -n 1 | cut -d' ' -f2-)
             if [ -z "$ZIP" ]; then echo "No ZIP or Gradle project found in the repository"; exit 1; fi
             echo "Using ZIP: $ZIP"
             rm -rf _proj && mkdir _proj
@@ -33,6 +35,8 @@ jobs:
             PROJECT=$(dirname "$SETTINGS")
           fi
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          echo "Kotlin files in project:"
+          find "$PROJECT" -name '*.kt' | sort
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -47,8 +51,29 @@ jobs:
 
       - name: Build debug APK
         run: |
+          set -o pipefail
           cd "$PROJECT"
-          if [ -x ./gradlew ]; then ./gradlew assembleDebug; else gradle assembleDebug; fi
+          if [ -x ./gradlew ]; then CMD=./gradlew; else CMD=gradle; fi
+          $CMD assembleDebug --console=plain 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Show compile errors
+        if: failure()
+        run: |
+          grep -E "^e: " build.log | sed 's#file://##' | head -30 | while read -r line; do echo "::error::$line"; done || true
+          {
+            echo "### Compile errors (lines starting with e:)"
+            echo '```'
+            grep -E "^e: " build.log | sed 's#file://##' | head -40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Collect APK
         run: |
